@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Infinite Choose-Your-Own-Adventure",
+  "description": "Бесконечный текстовый квест на базе Gemini 3 Flash. Полностью клиентское приложение на TypeScript.",
+  "requestFramePermissions": []
+}
