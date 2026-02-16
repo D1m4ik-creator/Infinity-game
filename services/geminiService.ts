@@ -1,105 +1,138 @@
 
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
-import { AdventureTurn } from "../types";
+import { AdventureTurn, CharacterStats, CombatInfo } from "../types";
 
 export class GeminiService {
   private static getAi() {
     return new GoogleGenAI({ apiKey: process.env.API_KEY });
   }
 
-  static async getQuickImagePrompt(
-    genre: string,
-    history: AdventureTurn[],
-    userChoice: string
-  ): Promise<string> {
-    const ai = this.getAi();
-    const lastStory = history[history.length - 1]?.story || "";
-    
-    const prompt = `
-      Жанр: ${genre}.
-      Последнее событие: ${lastStory.substring(0, 300)}...
-      Игрок выбрал: "${userChoice}".
-      ЗАДАЧА: Напиши короткое (10-15 слов) описание визуальной сцены на английском.
-    `;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        maxOutputTokens: 50,
-        temperature: 0.7
+  /**
+   * Выполняет функцию с экспоненциальной задержкой при получении ошибок квоты (429).
+   */
+  private static async withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
+    let delay = 3000; // Начинаем с 3 секунд для надежности на Free Tier
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (error: any) {
+        const errorMsg = error?.message?.toLowerCase() || "";
+        const isQuotaError = errorMsg.includes('429') || errorMsg.includes('quota') || errorMsg.includes('limit') || errorMsg.includes('exhausted');
+        
+        if (isQuotaError && i < maxRetries - 1) {
+          const jitter = Math.random() * 1500;
+          const totalDelay = delay + jitter;
+          console.warn(`Лимит запросов (429). Ожидание ${Math.round(totalDelay/1000)}с... (${i + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, totalDelay));
+          delay *= 3; // Агрессивное увеличение задержки
+          continue;
+        }
+        throw error;
       }
-    });
-
-    return response.text?.trim() || "cinematic scene, high quality";
+    }
+    throw new Error("API_QUOTA_EXHAUSTED");
   }
 
   static async generateNextTurn(
     genre: string,
     history: AdventureTurn[],
-    userChoice: string,
-    characterDescription: string
-  ): Promise<AdventureTurn> {
-    const ai = this.getAi();
-    
-    const contextHistory = history.slice(-3).map(h => 
-      `Место: ${h.locationName}\nСобытие: ${h.story}\nИгрок выбрал: ${userChoice}`
-    ).join('\n');
-    
-    const prompt = `
-      Продолжи приключение в жанре "${genre}". 
-      Игрок выбрал: "${userChoice}".
-      Персонаж: ${characterDescription}.
+    userAction: string,
+    characterDescription: string,
+    stats: CharacterStats,
+    isCombat: boolean = false
+  ): Promise<{ turn: AdventureTurn; updatedStats: CharacterStats }> {
+    return this.withRetry(async () => {
+      const ai = this.getAi();
+      const lastTurn = history[history.length - 1];
       
-      ЗАДАЧА: Сгенерируй JSON с полями:
-      - locationName: очень краткое название места (2-3 слова)
-      - story: текст продолжения (на русском)
-      - choices: 3 варианта (на русском)
-      - inventory: список предметов
-      - currentQuest: текущая цель
-      - imagePrompt: описание сцены на английском
-    `;
+      const prompt = `
+        Жанр: "${genre}". 
+        Действие: "${userAction}".
+        Персонаж: ${characterDescription}.
+        ОЗ:${stats.hp}/${stats.maxHp}, СИЛ:${stats.str}, ЛОВ:${stats.agi}, ИНТ:${stats.int}.
+        Инвентарь: ${lastTurn?.inventory.join(', ') || 'пусто'}.
+        В бою: ${isCombat ? 'ДА' : 'НЕТ'}.
+        
+        ЗАДАЧА: Сгенерируй JSON для следующего шага. 
+        - Если ОЗ <= 0, опиши смерть.
+        - story и choices на РУССКОМ.
+        - imagePrompt (для генерации картинки) на АНГЛИЙСКОМ, детально.
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            locationName: { type: Type.STRING },
-            story: { type: Type.STRING },
-            choices: { type: Type.ARRAY, items: { type: Type.STRING } },
-            inventory: { type: Type.ARRAY, items: { type: Type.STRING } },
-            currentQuest: { type: Type.STRING },
-            imagePrompt: { type: Type.STRING }
-          },
-          required: ["locationName", "story", "choices", "inventory", "currentQuest", "imagePrompt"]
-        }
-      }
-    });
+        JSON Schema:
+        - locationName: название
+        - locationType: "threat", "poi" или "neutral"
+        - threatLevel: 0-10
+        - discoveryTag: фраза о находке
+        - story: текст приключения (2-3 абзаца)
+        - choices: 3 варианта
+        - inventory: список предметов
+        - currentQuest: цель
+        - imagePrompt: visual description (English, 15 words)
+        - updatedStats: { hp, maxHp, str, agi, int, level, exp }
+        - combatInfo (если бой): { enemyName, enemyHp, enemyMaxHp, lastActionLog }
+      `;
 
-    const text = response.text;
-    if (!text) throw new Error("Empty response");
-    return JSON.parse(text) as AdventureTurn;
-  }
-
-  static async generateImage(prompt: string): Promise<string> {
-    const ai = this.getAi();
-    try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [{ text: `${prompt}. Masterpiece, high detail.` }]
-        },
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
         config: {
-          imageConfig: {
-            aspectRatio: "16:9"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              locationName: { type: Type.STRING },
+              locationType: { type: Type.STRING, enum: ["threat", "poi", "neutral"] },
+              threatLevel: { type: Type.NUMBER },
+              discoveryTag: { type: Type.STRING },
+              story: { type: Type.STRING },
+              choices: { type: Type.ARRAY, items: { type: Type.STRING } },
+              inventory: { type: Type.ARRAY, items: { type: Type.STRING } },
+              currentQuest: { type: Type.STRING },
+              imagePrompt: { type: Type.STRING },
+              updatedStats: {
+                type: Type.OBJECT,
+                properties: {
+                  hp: { type: Type.NUMBER },
+                  maxHp: { type: Type.NUMBER },
+                  str: { type: Type.NUMBER },
+                  agi: { type: Type.NUMBER },
+                  int: { type: Type.NUMBER },
+                  level: { type: Type.NUMBER },
+                  exp: { type: Type.NUMBER }
+                },
+                required: ["hp", "maxHp", "str", "agi", "int", "level", "exp"]
+              },
+              combatInfo: {
+                type: Type.OBJECT,
+                properties: {
+                  enemyName: { type: Type.STRING },
+                  enemyHp: { type: Type.NUMBER },
+                  enemyMaxHp: { type: Type.NUMBER },
+                  lastActionLog: { type: Type.STRING }
+                }
+              }
+            },
+            required: ["locationName", "locationType", "threatLevel", "discoveryTag", "story", "choices", "inventory", "currentQuest", "imagePrompt", "updatedStats"]
           }
         }
       });
 
+      const text = response.text || "{}";
+      const data = JSON.parse(text);
+      return { turn: data as AdventureTurn, updatedStats: data.updatedStats as CharacterStats };
+    });
+  }
+
+  static async generateImage(prompt: string): Promise<string> {
+    return this.withRetry(async () => {
+      const ai = this.getAi();
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [{ text: `${prompt}. Cinematic fantasy art, high detail, masterpiece.` }]
+        },
+        config: { imageConfig: { aspectRatio: "16:9" } }
+      });
       const parts = response.candidates?.[0]?.content?.parts;
       if (parts) {
         for (const part of parts) {
@@ -107,57 +140,56 @@ export class GeminiService {
         }
       }
       return "";
-    } catch (error) {
-      return "";
-    }
+    });
   }
 
   static async getOracleResponse(question: string, context: AdventureTurn[]): Promise<string> {
-    const ai = this.getAi();
-    const gameContext = context.slice(-3).map(c => c.story).join('\n');
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Контекст:\n${gameContext}\n\nВопрос к Оракулу: ${question}`,
-      config: {
-        systemInstruction: "Ты — мудрый Оракул. Отвечай кратко на русском."
-      }
+    return this.withRetry(async () => {
+      const ai = this.getAi();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Контекст:\n${context.slice(-1).map(c => c.story).join('\n')}\nВопрос: ${question}`,
+        config: { systemInstruction: "Ты — Оракул. Отвечай кратко на русском." }
+      });
+      return response.text || "Оракул молчит.";
     });
-    return response.text || "Оракул молчит...";
   }
 
-  static async initializeCharacter(genre: string): Promise<{ turn: AdventureTurn, characterDescription: string }> {
-    const ai = this.getAi();
-    const prompt = `Начни игру в жанре "${genre}". Создай первого героя и первый ход.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            characterDescription: { type: Type.STRING },
-            turn: {
-              type: Type.OBJECT,
-              properties: {
-                locationName: { type: Type.STRING },
-                story: { type: Type.STRING },
-                choices: { type: Type.ARRAY, items: { type: Type.STRING } },
-                inventory: { type: Type.ARRAY, items: { type: Type.STRING } },
-                currentQuest: { type: Type.STRING },
-                imagePrompt: { type: Type.STRING }
+  static async initializeCharacter(genre: string): Promise<{ turn: AdventureTurn, characterDescription: string, stats: CharacterStats }> {
+    return this.withRetry(async () => {
+      const ai = this.getAi();
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Начни приключение "${genre}". Создай героя и первую сцену. JSON на русском.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              characterDescription: { type: Type.STRING },
+              stats: {
+                type: Type.OBJECT,
+                properties: {
+                  hp: { type: Type.NUMBER }, maxHp: { type: Type.NUMBER }, str: { type: Type.NUMBER },
+                  agi: { type: Type.NUMBER }, int: { type: Type.NUMBER }, level: { type: Type.NUMBER }, exp: { type: Type.NUMBER }
+                },
+                required: ["hp", "maxHp", "str", "agi", "int", "level", "exp"]
               },
-              required: ["locationName", "story", "choices", "inventory", "currentQuest", "imagePrompt"]
-            }
-          },
-          required: ["characterDescription", "turn"]
+              turn: {
+                type: Type.OBJECT,
+                properties: {
+                  locationName: { type: Type.STRING }, locationType: { type: Type.STRING }, threatLevel: { type: Type.NUMBER },
+                  discoveryTag: { type: Type.STRING }, story: { type: Type.STRING }, choices: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  inventory: { type: Type.ARRAY, items: { type: Type.STRING } }, currentQuest: { type: Type.STRING }, imagePrompt: { type: Type.STRING }
+                },
+                required: ["locationName", "locationType", "threatLevel", "discoveryTag", "story", "choices", "inventory", "currentQuest", "imagePrompt"]
+              }
+            },
+            required: ["characterDescription", "stats", "turn"]
+          }
         }
-      }
+      });
+      return JSON.parse(response.text || "{}");
     });
-
-    const text = response.text;
-    if (!text) throw new Error("Init error");
-    return JSON.parse(text);
   }
 }
