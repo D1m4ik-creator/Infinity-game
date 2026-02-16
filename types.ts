@@ -1,6 +1,7 @@
 
 export enum GameState {
   START = 'START',
+  SETUP = 'SETUP',
   LOADING = 'LOADING',
   PLAYING = 'PLAYING',
   COMBAT = 'COMBAT',
@@ -50,4 +51,11 @@ export interface GameData {
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
+}
+
+export interface CustomWorldSettings {
+  worldDesc: string;
+  heroDesc: string;
+  weaponDesc: string;
+  villainDesc: string;
 }

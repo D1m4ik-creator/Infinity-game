@@ -1,5 +1,6 @@
+
 import React, { useState, useRef, useEffect } from 'react';
-import { GameState, GameData, ChatMessage, AdventureTurn, CharacterStats } from './types.ts';
+import { GameState, GameData, ChatMessage, AdventureTurn, CharacterStats, CustomWorldSettings } from './types.ts';
 import { GeminiService } from './services/geminiService.ts';
 import { 
   Backpack, 
@@ -25,7 +26,10 @@ import {
   Brain,
   Edit3,
   Trophy,
-  ScrollText
+  ScrollText,
+  Globe,
+  User,
+  Ghost
 } from 'lucide-react';
 
 const GENRES = [
@@ -129,7 +133,15 @@ const App: React.FC = () => {
   const [isTextLoading, setIsTextLoading] = useState(false);
   const [showMap, setShowMap] = useState(false);
   const [selectedChoiceIdx, setSelectedChoiceIdx] = useState<number | null>(null);
+  const [selectedGenre, setSelectedGenre] = useState<string>('');
   
+  const [customSettings, setCustomSettings] = useState<CustomWorldSettings>({
+    worldDesc: '',
+    heroDesc: '',
+    weaponDesc: '',
+    villainDesc: ''
+  });
+
   const [isCustomChoiceMode, setIsCustomChoiceMode] = useState(false);
   const [customChoiceValue, setCustomChoiceValue] = useState('');
   
@@ -185,13 +197,18 @@ const App: React.FC = () => {
     } catch (e) { showNotification("Ошибка загрузки"); }
   };
 
-  const startGame = async (genre: string) => {
+  const initSetup = (genre: string) => {
+    setSelectedGenre(genre);
+    setGameState(GameState.SETUP);
+  };
+
+  const startGame = async () => {
     setGameState(GameState.LOADING);
     setIsImageLoading(true);
     try {
-      const { turn, characterDescription, stats } = await GeminiService.initializeCharacter(genre);
+      const { turn, characterDescription, stats } = await GeminiService.initializeCharacter(selectedGenre, customSettings);
       setGameData({
-        genre,
+        genre: selectedGenre,
         characterDescription,
         currentTurn: turn,
         history: [turn],
@@ -293,13 +310,78 @@ const App: React.FC = () => {
           <p className="text-indigo-500/60 mb-12 uppercase tracking-[0.5em] text-[10px] font-black">Когнитивные Горизонты</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-12">
             {GENRES.map(genre => (
-              <button key={genre} onClick={() => startGame(genre)} className="p-6 rounded-[2rem] border border-slate-800 bg-slate-800/20 hover:bg-indigo-600/10 hover:border-indigo-500/50 transition-all text-left group active:scale-95">
+              <button key={genre} onClick={() => initSetup(genre)} className="p-6 rounded-[2rem] border border-slate-800 bg-slate-800/20 hover:bg-indigo-600/10 hover:border-indigo-500/50 transition-all text-left group active:scale-95">
                 <div className="text-indigo-300 font-bold mb-1 group-hover:text-white transition-colors">{genre}</div>
                 <div className="text-[9px] text-slate-500 uppercase tracking-widest">Инициализировать мир</div>
               </button>
             ))}
           </div>
           {hasSave && <button onClick={loadGame} className="flex items-center gap-3 px-10 py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl transition-all font-bold active:scale-95 mx-auto"><RotateCcw size={20} /> Вернуться к истокам</button>}
+        </div>
+      </div>
+    );
+  }
+
+  if (gameState === GameState.SETUP) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-slate-950 relative overflow-hidden">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(79,70,229,0.1),transparent)]" />
+        <div className="relative z-10 max-w-3xl w-full bg-slate-900/80 p-10 md:p-16 rounded-[3.5rem] border border-slate-800 backdrop-blur-3xl shadow-2xl animate-in zoom-in-95 duration-500">
+          <div className="flex items-center gap-4 mb-8">
+             <button onClick={() => setGameState(GameState.START)} className="p-3 bg-slate-800 hover:bg-slate-700 rounded-2xl text-slate-400 transition-all">
+                <X size={24} />
+             </button>
+             <h2 className="text-4xl font-fantasy text-white uppercase tracking-widest">Архитектор Реальности</h2>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2"><Globe size={14}/> Окружение / Мир</label>
+              <textarea 
+                value={customSettings.worldDesc}
+                onChange={e => setCustomSettings({...customSettings, worldDesc: e.target.value})}
+                placeholder="Забытый город в облаках, неоновая пустыня..." 
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-2xl p-4 text-sm focus:outline-none focus:border-indigo-500 transition-all h-32 resize-none placeholder-slate-600"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2"><User size={14}/> Главный Герой</label>
+              <textarea 
+                value={customSettings.heroDesc}
+                onChange={e => setCustomSettings({...customSettings, heroDesc: e.target.value})}
+                placeholder="Киборг-наемник с амнезией, последний маг..." 
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-2xl p-4 text-sm focus:outline-none focus:border-indigo-500 transition-all h-32 resize-none placeholder-slate-600"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2"><Sword size={14}/> Оружие</label>
+              <input 
+                type="text"
+                value={customSettings.weaponDesc}
+                onChange={e => setCustomSettings({...customSettings, weaponDesc: e.target.value})}
+                placeholder="Фотонная катана, ржавый револьвер..." 
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-2xl p-4 text-sm focus:outline-none focus:border-indigo-500 transition-all placeholder-slate-600"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[10px] font-black text-indigo-500 uppercase tracking-widest flex items-center gap-2"><Ghost size={14}/> Главный Злодей</label>
+              <input 
+                type="text"
+                value={customSettings.villainDesc}
+                onChange={e => setCustomSettings({...customSettings, villainDesc: e.target.value})}
+                placeholder="Искусственный интеллект, древний бог..." 
+                className="w-full bg-slate-800/50 border border-slate-700 rounded-2xl p-4 text-sm focus:outline-none focus:border-indigo-500 transition-all placeholder-slate-600"
+              />
+            </div>
+          </div>
+
+          <button 
+            onClick={startGame} 
+            className="w-full py-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-[2rem] font-black uppercase tracking-[0.4em] transition-all active:scale-95 shadow-2xl shadow-indigo-500/20 flex items-center justify-center gap-4"
+          >
+            <Sparkles size={24} /> Начать Путешествие
+          </button>
+          <p className="mt-6 text-center text-[10px] text-slate-500 uppercase tracking-widest">AI создаст мир на основе ваших предпочтений</p>
         </div>
       </div>
     );
@@ -313,7 +395,6 @@ const App: React.FC = () => {
     const finalTurn = gameData.currentTurn;
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 p-6 relative overflow-hidden">
-        {/* Анимация кровавого затухания */}
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(185,28,28,0.15),transparent)] animate-pulse" />
         <div className="absolute inset-0 pointer-events-none shadow-[inset_0_0_150px_rgba(0,0,0,1)]" />
         

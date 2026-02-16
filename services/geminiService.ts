@@ -1,17 +1,14 @@
 
 import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
-import { AdventureTurn, CharacterStats, CombatInfo } from "../types";
+import { AdventureTurn, CharacterStats, CombatInfo, CustomWorldSettings } from "../types";
 
 export class GeminiService {
   private static getAi() {
     return new GoogleGenAI({ apiKey: process.env.API_KEY });
   }
 
-  /**
-   * Выполняет функцию с экспоненциальной задержкой при получении ошибок квоты (429).
-   */
   private static async withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
-    let delay = 3000; // Начинаем с 3 секунд для надежности на Free Tier
+    let delay = 3000;
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await fn();
@@ -24,7 +21,7 @@ export class GeminiService {
           const totalDelay = delay + jitter;
           console.warn(`Лимит запросов (429). Ожидание ${Math.round(totalDelay/1000)}с... (${i + 1}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, totalDelay));
-          delay *= 3; // Агрессивное увеличение задержки
+          delay *= 3;
           continue;
         }
         throw error;
@@ -155,12 +152,29 @@ export class GeminiService {
     });
   }
 
-  static async initializeCharacter(genre: string): Promise<{ turn: AdventureTurn, characterDescription: string, stats: CharacterStats }> {
+  static async initializeCharacter(genre: string, settings?: CustomWorldSettings): Promise<{ turn: AdventureTurn, characterDescription: string, stats: CharacterStats }> {
     return this.withRetry(async () => {
       const ai = this.getAi();
+      
+      const customContext = settings ? `
+        ПОЛЬЗОВАТЕЛЬСКИЕ НАСТРОЙКИ:
+        - Окружение/Мир: ${settings.worldDesc || 'на твой вкус'}
+        - Главный герой: ${settings.heroDesc || 'на твой вкус'}
+        - Оружие героя: ${settings.weaponDesc || 'соответствующее сеттингу'}
+        - Главный злодей: ${settings.villainDesc || 'таинственная угроза'}
+      ` : '';
+
+      const prompt = `
+        Начни приключение в жанре "${genre}". 
+        ${customContext}
+        Создай экспозицию, героя и первую сцену. 
+        Учти все пользовательские настройки, если они указаны. Оружие должно быть в инвентаре героя.
+        JSON ответ на русском.
+      `;
+
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Начни приключение "${genre}". Создай героя и первую сцену. JSON на русском.`,
+        contents: prompt,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
